@@ -1,0 +1,8 @@
+# TI CC2531 running TI's packet-sniffer firmware: give the plugdev group read/write
+# access to its USB device node, so zigbee-sniffer can run without root.
+#
+#   sudo cp 99-cc2531-sniffer.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+#
+# Then replug the dongle, and make sure your user is in plugdev (`groups').
+SUBSYSTEM=="usb", ATTR{idVendor}=="0451", ATTR{idProduct}=="16ae", MODE="0660", GROUP="plugdev"

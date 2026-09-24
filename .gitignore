@@ -1,0 +1,16 @@
+*~
+.#*
+*.fasl
+
+# Built binary: embeds the SBCL core and is platform-specific.
+bin/
+
+# Vendored dependencies, restored with `ocicl install'. ocicl.csv pins them by
+# OCI digest and IS tracked; the sources themselves are not.
+ocicl/
+
+# Captures made while testing.
+*.pcap
+
+# Machine-specific.
+.claude/settings.local.json
