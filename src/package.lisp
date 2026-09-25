@@ -11,6 +11,9 @@
    #:frame #:frame-p #:make-frame
    #:frame-ticks #:frame-mac #:frame-rssi #:frame-correlation #:frame-crc-ok
    #:parse-message
+   #:make-message-assembler #:assembler-feed #:assembler-reset
+   #:message-assembler-skipped
+   #:frame-implausibility
    #:make-dongle-clock #:dongle-clock-microseconds
    #:+unix-epoch-universal-time+ #:unix-microseconds-now
    #:channel-p #:channel-frequency-mhz
@@ -25,4 +28,11 @@
    #:decode-mac-header #:frame-type-name #:format-address
    ;; pcap
    #:write-pcap-header #:write-pcap-frame #:tap-header #:encode-single-float
-   #:+linktype-ieee802-15-4-tap+))
+   #:+linktype-ieee802-15-4-tap+
+   #:read-pcap #:pcap-record #:record-microseconds #:record-channel #:record-rssi
+   #:record-lqi #:record-mac
+   ;; decoding
+   #:decode-frame #:obj #:field #:bool #:arr #:find-layer #:hex-string #:hex16 #:write-json
+   #:oui-vendor #:*oui-file* #:locally-administered-p
+   ;; inventory
+   #:make-inventory #:inventory-add #:inventory-report #:inventory-frames))

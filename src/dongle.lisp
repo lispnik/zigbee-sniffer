@@ -23,7 +23,8 @@
           find-dongles dongle-firmware device-location parse-device-location
           find-sniffer with-sniffer
           get-ident get-power radio-on radio-off set-channel start-capture stop-capture
-          with-capture capture-channel receive-message change-channel capture-failure))
+          with-capture capture-channel receive-message change-channel capture-failure
+          capture-skipped-octets))
 
 (defconstant +vendor-id+ #x0451)
 (defconstant +sniffer-product-id+ #x16ae)
@@ -163,6 +164,9 @@ leave a dongle streaming into a buffer nobody reads."
   channel
   (mailbox (sb-concurrency:make-mailbox :name "cc2531 messages"))
   (transfers '())
+  ;; Reads become messages here, on the caller's thread: see ASSEMBLER-FEED.
+  (assembler (make-message-assembler))
+  (ready '())                           ; whole messages not yet returned
   (stopping nil)
   ;; Set from the event thread when a transfer ends in something other than
   ;; completion or timeout -- the dongle unplugged, most often. Read by
@@ -246,11 +250,32 @@ the event thread joined, however BODY ends."
              (close-capture ,capture)))))))
 
 (defun receive-message (capture &key (timeout 0.25))
-  "The next raw message from the dongle, or NIL if none came within TIMEOUT seconds.
-Signals if the stream has failed."
+  "The next whole message from the dongle, or NIL if none completed within TIMEOUT
+seconds. Signals if the stream has failed.
+
+A bulk read is not a message: one can be split across two reads, so reads go
+through the capture's assembler and what comes out is cut on the messages' own
+length fields."
   (let ((failure (capture-failure capture)))
     (when failure (error "Capture failed: ~A." failure)))
-  (sb-concurrency:receive-message (capture-mailbox capture) :timeout timeout))
+  (let ((deadline (+ (get-internal-real-time)
+                     (round (* timeout internal-time-units-per-second)))))
+    (loop
+      (when (capture-ready capture)
+        (return (pop (capture-ready capture))))
+      (let* ((remaining (/ (- deadline (get-internal-real-time))
+                           (float internal-time-units-per-second)))
+             (read (and (plusp remaining)
+                        (sb-concurrency:receive-message (capture-mailbox capture)
+                                                        :timeout remaining))))
+        (unless read (return nil))
+        (setf (capture-ready capture)
+              (assembler-feed (capture-assembler capture) read))))))
+
+(defun capture-skipped-octets (capture)
+  "Octets discarded so far to regain message alignment. Nonzero means the stream
+held something that was not a message."
+  (message-assembler-skipped (capture-assembler capture)))
 
 (defun change-channel (capture channel)
   "Retune a running capture. Messages already queued from the old channel are
@@ -261,6 +286,8 @@ discarded, so none is attributed to the new one."
     ;; complete. Let it land, then throw it and everything before it away.
     (sleep 0.05)
     (sb-concurrency:receive-pending-messages (capture-mailbox capture))
+    (setf (capture-ready capture) '())
+    (assembler-reset (capture-assembler capture))
     (set-channel handle channel)
     (setf (capture-channel capture) channel)
     (start-capture handle)))

@@ -37,9 +37,20 @@ decide that stale fasls are current. `deploy` clears the `pi` fasl cache and roo
 
 ## Architecture
 
-- `zigbee-sniffer/core` (`src/stream.lisp`, `ieee802154.lisp`, `pcap.lisp`) is pure
-  Lisp. It parses the dongle's messages, decodes 802.15.4 MAC headers, runs the dongle
-  clock and writes pcap. The tests depend only on this system.
+- `zigbee-sniffer/core` is pure Lisp, and the tests depend only on it:
+  - `stream.lisp`: message parsing, reassembly and the dongle clock.
+  - `plausibility.lisp`: the plausibility checks.
+  - `ieee802154.lisp`: the minimal MAC header.
+  - `decode.lisp`: the full layered decoder.
+  - `oui.lisp`: vendor names.
+  - `inventory.lisp`: the networks-and-devices report.
+  - `pcap.lisp`: pcap reading and writing.
+  - `json.lisp`: JSON output.
+- **The decoder's data model:** `DECODE-FRAME` returns a list of layers, each an
+  ordered `(:object (key . value)...)` built with `OBJ`. A NIL value omits the key, so
+  booleans are written `:true` and `:false`. The text summary, the `-V` tree, JSON
+  output and the inventory all read this one structure through `FIELD` and
+  `FIND-LAYER`. Add fields to the decoder, not to the renderers.
 - `zigbee-sniffer` (`src/dongle.lisp`) covers the vendor requests, `WITH-SNIFFER` and
   `WITH-CAPTURE`. It exports its own names, so loading only the core advertises only
   the core.
@@ -50,6 +61,11 @@ Threads: bulk transfers complete on libusb's event-pump thread. The callback
 (`TRANSFER-COMPLETED`) only queues the bytes into an `sb-concurrency` mailbox and
 resubmits the transfer. All parsing and writing happens on the main thread through
 `RECEIVE-MESSAGE`, so each output stream has exactly one writer. Keep it that way.
+
+To check the decoder against tshark, compare its fields with
+`tshark -T fields -e wpan.src64 -e ipv6.src ...` on the saved captures (`captures/`,
+git-ignored). tshark 4.4.6 agreed on every compared field of 13,488 frames. Do this
+again after any decoder change that touches a layer the captures carry.
 
 ## Things that are easy to get wrong here
 
@@ -67,9 +83,26 @@ resubmits the transfer. All parsing and writing happens on the main thread throu
   omitted the offset and reported about -17 dBm for signals near sensitivity.
 - **The dongle clock must see every frame, including ones that are not written.**
   Skipping one can hide a counter wrap.
-- **Frames that fail CRC are excluded by default and never feed the PAN or source
-  counts.** Corrupt frames decode as devices that do not exist. This has been observed
-  on channel 12.
+- **A bulk read is not a message.** The endpoint is a byte stream, and about 1% of
+  messages arrive split across two reads. `RECEIVE-MESSAGE` goes through the
+  `MESSAGE-ASSEMBLER`. Never call `PARSE-MESSAGE` on a raw read. `CHANGE-CHANNEL` must
+  reset the assembler.
+- **CRC-OK is not enough.** About 3% of CRC-OK frames are corrupt (RSSI −200 to +53 dBm,
+  frame types 4–7), so `FRAME-IMPLAUSIBILITY` runs as well. Frames failing either check
+  are excluded by default and never feed RSSI, PAN or source statistics. Corrupt frames
+  decode as devices that do not exist, as on channel 12 and in the 18:28 capture, where
+  twenty-odd addresses appeared exactly once. `survey` counts a source only once it has
+  been heard twice.
+- **Byte order in the 802.15.4 security header:** the aux security header's key
+  source is most significant octet first, unlike every other multi-octet field. For
+  Thread, `00 00 00 17` is key sequence 23, with key index 24.
+- **A secured command frame's identifier is in the clear**; only its arguments are
+  encrypted.
+- **A truncated inner layer must not lose the layers above it.** `DECODE-6LOWPAN` and
+  MLE's TLV loop catch `TRUNCATED` themselves.
+- **Thread addresses:** extended addresses are random (locally administered), so
+  never look up a vendor for them. Thread short addresses are RLOC16s: router ID in
+  the top 6 bits, child ID in the low 9.
 - `SET_CHAN` is two requests (low byte at wIndex 0, high byte at wIndex 1), and it is
   ignored if it arrives before `GET_POWER` confirms the radio is on.
 - A beacon on channel 25 (and 12) sets a reserved frame-control bit. Wireshark marks it

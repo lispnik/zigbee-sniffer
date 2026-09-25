@@ -32,20 +32,22 @@
                              (when message
                                (multiple-value-bind (kind detail) (parse-message message)
                                  (when (eq kind :frame)
-                                   (count-frame stats detail))))))
+                                   (count-frame stats detail (frame-verdict detail)))))))
                   (format *error-output* "~&  ch ~2D  ~4D frame~:P~%"
                           channel (stats-frames stats))
                   (finish-output *error-output*))))))))
+    ;; BAD counts frames that failed CRC or a plausibility check; RSSI, sources and
+    ;; PANs come only from the rest, and a source counts once it has been heard twice.
     (format t "~&~%CH   MHz  FRAMES   BAD   MEAN dBm  PEAK dBm  SOURCES  PANS~%")
     (dolist (channel channels)
       (let ((stats (gethash channel table)))
         (format t "~2D  ~4D  ~6D  ~4D  ~9@A  ~8@A  ~7D  ~{0x~(~4,'0x~)~^ ~}~%"
                 channel (channel-frequency-mhz channel)
-                (stats-frames stats) (stats-bad-crc stats)
+                (stats-frames stats) (+ (stats-bad-crc stats) (stats-implausible stats))
                 (let ((mean (stats-rssi-mean stats)))
                   (if mean (format nil "~,1F" mean) "-"))
                 (or (stats-rssi-max stats) "-")
-                (length (stats-sources stats))
+                (stats-source-count stats)
                 (sort (copy-list (stats-pans stats)) #'<))))))
 
 (register-subcommand

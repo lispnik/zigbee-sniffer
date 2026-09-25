@@ -64,7 +64,7 @@ test:
 # Pi cannot fetch it. Its own ocicl/ is not: libusb resolves cffi and
 # bordeaux-threads from OUR ocicl/, which is the point of :directory above.
 deploy:
-	rsync -a --delete --exclude .git --exclude ocicl --exclude bin --exclude '*.pcap' \
+	rsync -a --delete --exclude .git --exclude ocicl --exclude bin --exclude captures --exclude '*.pcap' \
 	      --exclude '*.fasl' ./ $(HOST):$(DEST)
 	rsync -a --exclude .git ./ocicl/ $(HOST):$(DEST)ocicl/
 	rsync -a --delete --exclude .git --exclude ocicl --exclude vendor --exclude '*.fasl' \

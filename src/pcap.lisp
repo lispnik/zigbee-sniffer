@@ -104,3 +104,73 @@ CC2531 has in place of an 802.15.4 LQI."
     (write-u32 stream (length octets))
     (write-u32 stream (length octets))
     (write-sequence octets stream)))
+
+;;; --- reading -----------------------------------------------------------
+
+(defstruct (pcap-record (:conc-name record-))
+  microseconds channel rssi lqi mac)
+
+(defun read-pcap (path)
+  "The IEEE 802.15.4 records in the pcap file at PATH, as a list of PCAP-RECORDs.
+
+Reads what this tool writes -- LINKTYPE_IEEE802_15_4_TAP, whose TLVs give RSS,
+channel and LQI -- and the plain 802.15.4 link types, 195 (with a two-octet FCS,
+which is stripped) and 230 (without), for which those fields are NIL. Either byte
+order; microsecond or nanosecond timestamps."
+  (let ((octets (with-open-file (in path :element-type '(unsigned-byte 8))
+                  (let ((v (make-array (file-length in) :element-type '(unsigned-byte 8))))
+                    (read-sequence v in)
+                    v))))
+    (when (< (length octets) 24) (error "~A is too short to be a pcap file." path))
+    (let* ((magic (little-endian octets 0 4))
+           (swapped (member magic '(#xd4c3b2a1 #x4d3cb2a1)))
+           (nanoseconds (member magic '(#xa1b23c4d #x4d3cb2a1))))
+      (unless (member magic '(#xa1b2c3d4 #xd4c3b2a1 #xa1b23c4d #x4d3cb2a1))
+        (error "~A is not a pcap file (magic ~8,'0X); pcapng is not supported." path magic))
+      (flet ((u32 (i) (if swapped (big-endian octets i 4) (little-endian octets i 4))))
+        (let ((linktype (u32 20)))
+          (unless (member linktype '(195 230 283))
+            (error "~A has link type ~D, not IEEE 802.15.4 (195, 230 or 283)." path linktype))
+          (loop with position = 24
+                while (<= (+ position 16) (length octets))
+                collect (let* ((seconds (u32 position)) (fraction (u32 (+ position 4)))
+                               (length (u32 (+ position 8)))
+                               (data (subseq octets (+ position 16)
+                                             (min (length octets) (+ position 16 length)))))
+                          (incf position (+ 16 length))
+                          (let ((record (make-pcap-record
+                                         :microseconds (+ (* seconds 1000000)
+                                                          (if nanoseconds (floor fraction 1000) fraction)))))
+                            (case linktype
+                              (195 (setf (record-mac record) (subseq data 0 (max 0 (- (length data) 2)))))
+                              (230 (setf (record-mac record) data))
+                              (283 (read-tap record data)))
+                            record))))))))
+
+(defun read-tap (record data)
+  "Fill RECORD from a TAP pseudo-header and the frame after it."
+  (let ((header-length (little-endian data 2 2)) (fcs-type 0))
+    (loop with position = 4
+          while (<= (+ position 4) header-length)
+          do (let* ((type (little-endian data position 2))
+                    (length (little-endian data (+ position 2) 2))
+                    (value (+ position 4)))
+               (case type
+                 (0 (setf fcs-type (aref data value)))
+                 (1 (setf (record-rssi record)
+                          (round (decode-single-float (little-endian data value 4)))))
+                 (3 (setf (record-channel record) (little-endian data value 2)))
+                 (10 (setf (record-lqi record) (aref data value))))
+               (incf position (+ 4 length (mod (- length) 4)))))
+    (let ((mac (subseq data header-length)))
+      (setf (record-mac record)
+            (subseq mac 0 (max 0 (- (length mac) (case fcs-type (1 2) (2 4) (t 0)))))))))
+
+(defun decode-single-float (bits)
+  "The inverse of ENCODE-SINGLE-FLOAT, for finite values."
+  (let ((sign (if (logbitp 31 bits) -1 1))
+        (exponent (ldb (byte 8 23) bits))
+        (mantissa (ldb (byte 23 0) bits)))
+    (* sign (if (zerop exponent)
+                (scale-float (float mantissa 1f0) -149)
+                (scale-float (float (logior mantissa #x800000) 1f0) (- exponent 150))))))

@@ -9,7 +9,8 @@ bin/
 # OCI digest and IS tracked; the sources themselves are not.
 ocicl/
 
-# Captures made while testing.
+# Captures made while testing, and the reports written about them.
+captures/
 *.pcap
 
 # Machine-specific.

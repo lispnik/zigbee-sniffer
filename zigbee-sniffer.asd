@@ -26,7 +26,13 @@
                              (:file "stream"    :depends-on ("package"))
                              ;; "stream" for LITTLE-ENDIAN.
                              (:file "ieee802154" :depends-on ("stream"))
-                             (:file "pcap"      :depends-on ("stream")))))
+                             ;; "decode" for BIG-ENDIAN, which the reader shares.
+                             (:file "pcap"      :depends-on ("stream" "decode"))
+                             (:file "plausibility" :depends-on ("stream" "ieee802154" "decode"))
+                             (:file "oui"       :depends-on ("package"))
+                             (:file "decode"    :depends-on ("ieee802154" "oui"))
+                             (:file "json"      :depends-on ("package"))
+                             (:file "inventory" :depends-on ("decode")))))
   :in-order-to ((asdf:test-op (asdf:test-op #:zigbee-sniffer/tests))))
 
 (asdf:defsystem #:zigbee-sniffer
@@ -47,7 +53,8 @@
   :components ((:module "tests"
                 :serial t
                 :components ((:file "package")
-                             (:file "core-tests"))))
+                             (:file "core-tests")
+                             (:file "decode-tests"))))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              ;; ASDF ignores what PERFORM returns; signal, or CI stays green on a
@@ -67,8 +74,11 @@
                              ;; One file per subcommand; each registers itself.
                              (:file "list"    :depends-on ("main"))
                              (:file "info"    :depends-on ("main"))
-                             (:file "capture" :depends-on ("main"))
-                             (:file "survey"  :depends-on ("main")))))
+                             ;; "inventory" for PRINT-INVENTORY, used by --inventory.
+                             (:file "capture" :depends-on ("main" "inventory"))
+                             (:file "survey"  :depends-on ("main"))
+                             (:file "read"    :depends-on ("main"))
+                             (:file "inventory" :depends-on ("read")))))
   :build-operation "program-op"
   :build-pathname  "bin/zigbee-sniffer"
   :entry-point     "zigbee-sniffer.cli:main")

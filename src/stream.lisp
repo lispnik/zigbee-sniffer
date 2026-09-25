@@ -39,8 +39,10 @@ radio's sensitivity, which is exactly where a third of frames failing CRC belong
   "One captured 802.15.4 frame, as the dongle reported it."
   (ticks 0 :type (unsigned-byte 32))    ; the dongle's 1/32 us counter
   (mac #() :type vector)                ; the MAC frame, less its FCS
-  (rssi 0 :type integer)                ; dBm, with +RSSI-OFFSET+ applied
-  (correlation 0 :type (integer 0 127)) ; the radio's LQI stand-in
+  ;; RSSI and correlation are NIL for a frame read from a pcap that did not record
+  ;; them (the plain 802.15.4 link types).
+  (rssi 0 :type (or null integer))      ; dBm, with +RSSI-OFFSET+ applied
+  (correlation 0 :type (or null (integer 0 255))) ; the radio's LQI stand-in
   (crc-ok nil))
 
 (defun little-endian (octets start count)
@@ -151,3 +153,70 @@ skipping a frame must not be able to hide a wrap."
 
 (defun channel-frequency-mhz (channel)
   (+ 2405 (* 5 (- channel 11))))
+
+;;; --- reassembly --------------------------------------------------------
+;;;
+;;; The bulk endpoint is a byte stream, not a message stream. Most reads carry
+;;; exactly one message, which is how the one-read-one-message assumption survived
+;;; the first captures -- but over an hour on a busy channel about one message in a
+;;; hundred arrives split across two consecutive reads, at any offset: 48 + 24 bytes
+;;; of one 72-byte beacon message, 13 + 64 of a 77-byte MLE one. Parsed per read,
+;;; both halves are malformed and the frame is lost; worse, a tail can happen to
+;;; parse, and becomes a frame of arbitrary bytes.
+;;;
+;;; So the reads are concatenated in arrival order -- libusb completes transfers on
+;;; one endpoint in submission order, and the mailbox keeps it -- and messages are
+;;; cut from the front by their own length fields. A header that cannot be right is
+;;; skipped a byte at a time until one that can be is found, and the bytes skipped
+;;; are counted rather than hidden.
+
+(defconstant +max-frame-length+ 127
+  "The largest 802.15.4 PSDU, FCS included -- and so the largest frame-length byte.")
+
+(defstruct (message-assembler (:constructor make-message-assembler ()))
+  (buffer (make-array 512 :element-type '(unsigned-byte 8) :fill-pointer 0 :adjustable t))
+  (skipped 0))                          ; octets discarded to regain alignment
+
+(defun plausible-header-p (buffer)
+  "Whether BUFFER starts with a header that could be a message: :YES, :NO, or :MORE
+if it cannot tell yet."
+  (let ((length (length buffer)))
+    (cond ((< length 3) :more)
+          (t (let ((type (aref buffer 0))
+                   (body-length (little-endian buffer 1 2)))
+               (case type
+                 ;; Every heartbeat seen has had a 1-byte body.
+                 (1 (if (<= 1 body-length 4) :yes :no))
+                 (0 (cond ((not (<= 8 body-length (+ 5 +max-frame-length+))) :no)
+                          ((< length 8) :more)
+                          ;; The frame-length byte must agree with the body length.
+                          ((= (aref buffer 7) (- body-length 5)) :yes)
+                          (t :no)))
+                 (t :no)))))))
+
+(defun assembler-feed (assembler octets)
+  "Append one bulk read to ASSEMBLER. Returns the complete messages now available,
+oldest first; a partial message stays buffered for the next read."
+  (let ((buffer (message-assembler-buffer assembler))
+        (messages '()))
+    (loop for octet across octets do (vector-push-extend octet buffer))
+    (loop
+      (ecase (plausible-header-p buffer)
+        (:more (return))
+        (:no
+         ;; Drop one byte and look again.
+         (replace buffer buffer :start2 1)
+         (decf (fill-pointer buffer))
+         (incf (message-assembler-skipped assembler)))
+        (:yes
+         (let ((end (+ 3 (little-endian buffer 1 2))))
+           (when (< (length buffer) end) (return))
+           (push (subseq buffer 0 end) messages)
+           (replace buffer buffer :start2 end)
+           (decf (fill-pointer buffer) end)))))
+    (nreverse messages)))
+
+(defun assembler-reset (assembler)
+  "Discard any partial message, as after retuning: its tail would belong to a
+frame from the old channel."
+  (setf (fill-pointer (message-assembler-buffer assembler)) 0))

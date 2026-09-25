@@ -15,6 +15,10 @@
 ;;; exist -- in the capture this tool was written against, one corrupt beacon
 ;;; decoded as a different device, its extended address off by a single byte.
 ;;; TAP has no CRC-validity field, so once written, nothing marks them.
+;;;
+;;; Frames that passed CRC but cannot be real -- an RSSI the radio cannot measure, a
+;;; frame type nothing on 2.4 GHz sends -- are treated the same way, under
+;;; --implausible. See FRAME-IMPLAUSIBILITY.
 
 (defun open-pcap-output (path)
   (if (string= path "-")
@@ -29,13 +33,19 @@
          (count (clingon:getopt command :count))
          (path (clingon:getopt command :write))
          (bad-crc (clingon:getopt command :bad-crc))
+         (implausible (clingon:getopt command :implausible))
          (hex-p (clingon:getopt command :hex))
+         (format (clingon:getopt command :format))
+         (decode (clingon:getopt command :decode))
+         (inventory (and (clingon:getopt command :inventory) (make-inventory)))
          (lines (cond ((null path) *standard-output*)
                       ((clingon:getopt command :verbose) *error-output*)))
          (stats (make-stats))
          (clock (make-dongle-clock))
          (pcap nil)
+         (skipped 0)
          (ended :interrupted))
+    (use-oui-option command)
     (unwind-protect
          (progn
            (when path
@@ -62,9 +72,13 @@
                            ;; The clock sees every frame, kept or not, so that one
                            ;; dropped frame cannot hide a counter wrap.
                            (let ((microseconds (dongle-clock-microseconds
-                                                clock (frame-ticks detail))))
-                             (count-frame stats detail)
-                             (when (or (frame-crc-ok detail) bad-crc)
+                                                clock (frame-ticks detail)))
+                                 (verdict (frame-verdict detail)))
+                             (count-frame stats detail verdict)
+                             (when (case verdict
+                                     ((nil) t)
+                                     (:bad-crc bad-crc)
+                                     (t implausible))
                                (incf (stats-written stats))
                                (when pcap
                                  (write-pcap-frame pcap detail :channel channel
@@ -73,11 +87,14 @@
                                  ;; killed run leaves a readable file.
                                  (finish-output pcap))
                                (when lines
-                                 (write-line (frame-summary detail :channel channel
-                                                                   :microseconds microseconds)
-                                             lines)
-                                 (when hex-p (hexdump (frame-mac detail) :stream lines))
-                                 (force-output lines)))))))))
+                                 (emit-frame lines detail :channel channel
+                                                          :microseconds microseconds
+                                                          :verdict verdict :format format
+                                                          :decode decode :hex hex-p)
+                                 (force-output lines)))
+                             (when (and inventory (null verdict))
+                               (inventory-add inventory detail :microseconds microseconds
+                                                               :channel channel))))))))
                (with-stop-signals ()
                  (with-capture (capture handle :channel channel)
                    (let ((deadline (and seconds (+ (monotonic-seconds) seconds))))
@@ -93,30 +110,38 @@
                                  (handler-case (handle-message message)
                                    ;; The reader went away: `| head', or Wireshark
                                    ;; closed. That is how a pipe ends, not an error.
-                                   (stream-error () (return :output-closed)))))))))))))
+                                   (stream-error () (return :output-closed)))))))
+                     (setf skipped (capture-skipped-octets capture))))))))
       (when (and pcap (not (string= path "-")))
         (close pcap)))
     (unless (and (eq ended :output-closed) (null path))
-      (format *error-output*
-              "~&~%Channel ~D: ~D frame~:P, ~D ~:[shown~;written~], ~D failed CRC~:[ (excluded; --bad-crc keeps them)~;~]~
-               ~[~:;, ~:*~D malformed~]~[~:;, ~:*~D of unknown type~]~%  ~
-               ~D heartbeat~:P, RSSI ~:[n/a~*~;~:*mean ~,1F dBm, peak ~D dBm~]~%~
-               ~@[  wrote ~A~%~]~@[  stopped: ~A~%~]"
-              channel (stats-frames stats) (stats-written stats) pcap
-              (stats-bad-crc stats) (or bad-crc (zerop (stats-bad-crc stats)))
-              (stats-malformed stats) (stats-unknown stats)
-              (stats-heartbeats stats)
-              (stats-rssi-mean stats) (stats-rssi-max stats)
-              (and path (not (string= path "-")) path)
-              (and (eq ended :output-closed) "the output was closed")))))
+      (let ((out *error-output*))
+        (format out "~&~%Channel ~D: ~D frame~:P received, ~D ~:[shown~;written~]~%"
+                channel (stats-frames stats) (stats-written stats) pcap)
+        (format out "  ~D failed CRC~:[ (excluded; --bad-crc keeps them)~;~]~%"
+                (stats-bad-crc stats) (or bad-crc (zerop (stats-bad-crc stats))))
+        (format out "  ~D passed CRC but are implausible~:[ (excluded; --implausible keeps them)~;~]~%"
+                (stats-implausible stats) (or implausible (zerop (stats-implausible stats))))
+        (when (or (plusp (stats-malformed stats)) (plusp (stats-unknown stats)) (plusp skipped))
+          (format out "  ~D malformed message~:P, ~D of unknown type, ~D octet~:P skipped to realign~%"
+                  (stats-malformed stats) (stats-unknown stats) skipped))
+        (format out "  ~D heartbeat~:P, RSSI ~:[n/a~*~;~:*mean ~,1F dBm, peak ~D dBm~] (good frames)~%"
+                (stats-heartbeats stats) (stats-rssi-mean stats) (stats-rssi-max stats))
+        (when (and path (not (string= path "-")))
+          (format out "  wrote ~A~%" path))
+        (when (eq ended :output-closed)
+          (format out "  stopped: the output was closed~%"))))
+    (when inventory
+      (print-inventory (inventory-report inventory) *error-output*))))
 
 (register-subcommand
  (clingon:make-command
   :name "capture"
   :description "capture 802.15.4 frames on one channel, to the terminal or a pcap file"
-  :usage "[-c CHANNEL] [-w FILE|-] [-t SECONDS] [-n COUNT] [--bad-crc] [-x] [-v]"
+  :usage "[-c CHANNEL] [-w FILE|-] [-t SECONDS] [-n COUNT] [-V] [--format text|jsonl] [-i] ..."
   :options
-  (list (channel-option)
+  (append
+   (list (channel-option)
         (clingon:make-option :string
                              :description "write a pcap file (IEEE 802.15.4 TAP); - for stdout"
                              :short-name #\w :long-name "write" :key :write)
@@ -130,10 +155,14 @@
                              :description "keep frames that failed CRC (marked BAD-CRC in text; unmarked in pcap)"
                              :long-name "bad-crc" :key :bad-crc)
         (clingon:make-option :flag
-                             :description "hex dump each frame's MAC bytes under its summary"
-                             :short-name #\x :long-name "hex" :key :hex)
+                             :description "keep frames that passed CRC but cannot be real: impossible RSSI, frame type or length (marked IMPLAUSIBLE in text; unmarked in pcap)"
+                             :long-name "implausible" :key :implausible)
         (clingon:make-option :flag
                              :description "with --write, also print each frame on stderr"
                              :short-name #\v :long-name "verbose" :key :verbose)
+        (clingon:make-option :flag
+                             :description "when the capture ends, report every network and device seen (see `inventory')"
+                             :short-name #\i :long-name "inventory" :key :inventory)
         (device-option))
+   (output-options))
   :handler (reporting-errors #'capture/handler)))
