@@ -39,7 +39,10 @@
                                                         (libusb:endpoint-descriptor-max-packet-size endpoint)))))))
       (format t "Identity      ~A  (GET_IDENT)~%" (hex (get-ident handle)))
       (let ((power (get-power handle)))
-        (format t "Radio         ~:[off~;on~] (power register ~D)~%" (= power 4) power)))))
+        ;; Off is the normal state here: capture and survey power the radio up
+        ;; for their duration and down again after, and info only reads.
+        (format t "Radio         ~:[off (idle: capture and survey power it on while they run)~;on~] ~
+                   (power register ~D)~%" (= power 4) power)))))
 
 (register-subcommand
  (clingon:make-command

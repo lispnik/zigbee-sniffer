@@ -167,6 +167,21 @@ beacons from `00:d0:2d:ff:fe:12:e3:cb` decoded with source addresses
 `c0:d5:2d:ff:9e:12:e3:cd` and `2d:ff:fe:f2:e3:cb:6e:d2`. TAP has no field for CRC
 validity, so a bad frame in a pcap file looks the same as a good one.
 
+**What the CRC bit means, measured.** TI's CC253x user guide
+([SWRU191F](https://www.ti.com/lit/ug/swru191f/swru191f.pdf), 23.9.7) says the radio
+replaces the FCS with RSSI and a CRC_OK/correlation byte. The captures confirm the FCS
+is gone: none of 7,728 clean frames ends in a valid 802.15.4 CRC.
+
+- **CRC failed means corrupt.** At the Mac, 51 of 51 CRC-failed Resideo beacons
+  differed from the beacon's true content.
+- **CRC-OK at the frame's true length means intact.** At the Pi, 6,768 of 6,768
+  CRC-OK beacons matched byte for byte.
+- **CRC-OK at the wrong length means nothing.** When the length byte itself is
+  corrupted, the dongle cuts the frame in the wrong place, and the two octets it
+  reports as RSSI and status are ordinary payload. An MLE advertisement cut to 53 of
+  its 72 bytes reported "RSSI/status" `4d ae`, exactly the true frame's octets 53
+  and 54. Half such frames read as CRC-OK.
+
 **Passing CRC is not enough on its own.** Over an hour on channel 25, about 3% of the
 frames the radio marked CRC-OK were plainly corrupt. They were real MLE advertisements
 and beacons with bits flipped throughout, and frames of random bytes, with RSSI
@@ -174,7 +189,8 @@ readings from −200 to +53 dBm, which the radio cannot measure. Many carried th
 trailing −34 dBm / LQI 63 under different "sources", so even their status bytes were
 not the radio's. A frame is therefore also rejected as *implausible* if any of these
 hold:
-- its RSSI is outside −100 to +10 dBm
+- its RSSI is outside −101 to +4 dBm (the data sheet's sensitivity and RSSI range,
+  ±4 dB)
 - its frame type is one that nothing on 2.4 GHz sends (reserved, multipurpose,
   fragment or extended)
 - its frame version is the reserved 3
@@ -185,8 +201,9 @@ Implausible frames are counted and excluded like failed-CRC frames; `--implausib
 keeps them. Some corrupt frames still pass every check, typically a real address with
 one byte wrong, so `survey` counts a source only once it has been heard twice.
 
-**RSSI** is the radio's RSSI byte minus 73 dB, the CC2530-family datasheet's typical
-offset. Without the offset, a neighbour's thermostat reads about -17 dBm, a level you
+**RSSI** is the radio's RSSI byte minus 73 dB, the RSSI offset in the CC2531 data sheet
+([SWRS086A](https://www.ti.com/lit/ds/symlink/cc2531.pdf)). The same table gives its
+absolute accuracy as ±4 dB uncalibrated, so treat every dBm figure as ±4 dB. Without the offset, a neighbour's thermostat reads about -17 dBm, a level you
 would expect from a transmitter a few centimetres away, yet a third of its frames fail
 CRC. With the offset it reads about -90 dBm, near the radio's sensitivity, which is
 consistent with that failure rate. **LQI** is the radio's 7-bit correlation value

@@ -309,6 +309,10 @@ claims CRC-OK at -110 dBm.")
 
 (test impossible-frames-are-implausible
   (is (eq :rssi (frame-implausibility (frame-with *beacon-mac* :rssi 53))))
+  ;; Above the top of the RSSI range, though below saturation: a 102-byte damaged
+  ;; copy of a real frame at +8 dBm got past the old +10 bound.
+  (is (eq :rssi (frame-implausibility (frame-with *beacon-mac* :rssi 8))))
+  (is (null (frame-implausibility (frame-with *beacon-mac* :rssi -101))))
   (is (eq :rssi (frame-implausibility (frame-with *beacon-mac* :rssi -146))))
   ;; Frame types 4-7: reserved, multipurpose, fragment, extended.
   (dolist (type '(4 5 6 7))

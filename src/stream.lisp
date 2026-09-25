@@ -26,9 +26,11 @@
 (defconstant +rssi-offset+ 73
   "Subtracted from the radio's RSSI byte to give dBm.
 
-The byte is the CC2530-family RSSI register value, which the datasheet defines as
-offset from the power at the antenna by about 73 dB. The value is the datasheet's
-typical figure, not a calibration of this dongle.
+The CC253x user guide (SWRU191F, 23.9.7) documents the two octets that replace the
+FCS: RSSI, signed, then CRC_OK in bit 7 with the correlation value in bits 6-0. The
+CC2531 data sheet (SWRS086A) gives the RSSI/CCA offset as 73 dB, with an absolute
+uncalibrated accuracy of +/-4 dB -- so every dBm figure here is good to about 4 dB,
+and none is a calibration of this particular dongle.
 
 It matters more than it looks. Uncorrected, a capture of a neighbour's thermostat
 reads -17 dBm -- the level of a transmitter a few centimetres away -- while losing a
