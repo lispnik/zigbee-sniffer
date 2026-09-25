@@ -30,19 +30,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Pinned, not ubuntu-latest, so the libusb under test changes only on
+          # purpose: 24.04 ships 1.0.27, the oldest version this runs against.
           - arch: x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - arch: aarch64
             runner: ubuntu-24.04-arm
 
     steps:
       - name: Check out zigbee-sniffer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: zigbee-sniffer
 
       - name: Check out libusb
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: lispnik/libusb
           path: libusb
@@ -57,7 +59,7 @@ jobs:
           sbcl --version
 
       - name: Cache ocicl
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.local/bin
@@ -83,7 +85,7 @@ jobs:
       # registry with :directory, so libusb resolves cffi and bordeaux-threads from
       # this project's ocicl/ -- one copy of each.
       - name: Cache dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: zigbee-sniffer/ocicl
           key: deps-${{ matrix.arch }}-${{ hashFiles('zigbee-sniffer/ocicl.csv') }}
