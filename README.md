@@ -1,5 +1,7 @@
 # zigbee-sniffer
 
+[![CI](https://github.com/lispnik/zigbee-sniffer/actions/workflows/ci.yml/badge.svg)](https://github.com/lispnik/zigbee-sniffer/actions/workflows/ci.yml)
+
 An IEEE 802.15.4 / Zigbee / Thread sniffer for the **TI CC2531** USB dongle running TI's
 packet-sniffer firmware, as a Common Lisp library and a command-line tool. It prints
 frames as they arrive, writes pcap files for Wireshark, and surveys channels. Built on

@@ -24,6 +24,10 @@ On the Pi, run it with `ssh pi@rpi4 'cd ~/zigbee-sniffer && sudo -n bin/zigbee-s
 The device node is root-only there. Do not install the udev rule on the Pi without
 asking, because it is a permanent change to that machine.
 
+CI (`.github/workflows/ci.yml`, Linux x86_64 and aarch64) checks out `lispnik/libusb`
+as a sibling and runs `make test` and `make`, then starts the binary. Nothing in CI
+needs a dongle.
+
 To run one test: `(fiveam:run! 'zigbee-sniffer/tests::the-documented-beacon-message-parses)`.
 
 The Makefile's `BOOT` sets up a hermetic source registry: this tree as a `:tree`, and

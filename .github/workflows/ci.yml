@@ -1,0 +1,120 @@
+name: CI
+
+# Runs the core suite -- the stream parser and reassembler, the plausibility checks,
+# the layered decoder, the inventory, pcap and JSON -- and builds the binary. Nothing
+# here needs a dongle: the suite is hardware-free by design, and what needs a radio
+# (capture, survey, info) is tested on the Pi.
+#
+# Two checkouts, because the USB layer lives in its own repository and this project
+# depends on it as a sibling; see LIBUSB_DIR in the Makefile. lispnik/libusb is
+# public, so the job's own token can check it out and no secret is needed.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # aarch64 as well as x86_64: the binary is deployed to a Raspberry Pi, and the
+    # layers beneath it -- libusb's struct offsets, the event-pump thread -- are
+    # exactly what differs by architecture. Both runners are native.
+    name: linux/${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Check out zigbee-sniffer
+        uses: actions/checkout@v4
+        with:
+          path: zigbee-sniffer
+
+      - name: Check out libusb
+        uses: actions/checkout@v4
+        with:
+          repository: lispnik/libusb
+          path: libusb
+
+      # libusb-1.0-0 is not needed to build or to run the suite -- the bindings
+      # resolve lazily -- but the binary is started below, and it should start on a
+      # machine that has the library it will use.
+      - name: Install SBCL and libusb
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sbcl libusb-1.0-0
+          sbcl --version
+
+      - name: Cache ocicl
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/bin
+            ~/.local/share/ocicl
+          key: ocicl-${{ matrix.arch }}-v1
+
+      # ocicl builds with `sbcl --load setup.lisp', which installs the binary in
+      # ~/.local/bin; it has no Makefile. Cloned into RUNNER_TEMP, away from the
+      # checkouts, and checked afterwards: inside an `if', a failing `&&' chain does
+      # not trip bash -e, and the step would pass with nothing installed.
+      - name: Install ocicl if it is not cached
+        run: |
+          if ! [ -x "$HOME/.local/bin/ocicl" ]; then
+            git clone --depth 1 --quiet https://github.com/ocicl/ocicl.git "$RUNNER_TEMP/ocicl"
+            (cd "$RUNNER_TEMP/ocicl" && sbcl --non-interactive --load setup.lisp > /dev/null)
+            test -x "$HOME/.local/bin/ocicl"
+            "$HOME/.local/bin/ocicl" setup > /dev/null
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Keyed on ocicl.csv, which pins every dependency by OCI digest. libusb's own
+      # ocicl/ is never restored: the Makefile puts that checkout on the source
+      # registry with :directory, so libusb resolves cffi and bordeaux-threads from
+      # this project's ocicl/ -- one copy of each.
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: zigbee-sniffer/ocicl
+          key: deps-${{ matrix.arch }}-${{ hashFiles('zigbee-sniffer/ocicl.csv') }}
+
+      - name: Restore dependencies
+        working-directory: zigbee-sniffer
+        run: |
+          # ocicl exits 0 when a download fails, so the directory is what is checked.
+          for attempt in 1 2 3; do
+            ocicl install && test -d ocicl && break
+            echo "==> ocicl install attempt $attempt did not produce ocicl/; retrying"
+            sleep 5
+          done
+          test -d ocicl
+
+      - name: Run tests
+        working-directory: zigbee-sniffer
+        run: make test LIBUSB_DIR=../libusb
+
+      # Building is what catches a call into libusb whose signature moved underneath
+      # this project; starting the binary is what catches an image that dumped but
+      # will not run.
+      - name: Build and start the binary
+        working-directory: zigbee-sniffer
+        run: |
+          make LIBUSB_DIR=../libusb
+          bin/zigbee-sniffer --version
+          bin/zigbee-sniffer --help > /dev/null
+          bin/zigbee-sniffer capture --help > /dev/null
+
+      # tools/ is outside the ASDF graph, so nothing else here would notice it rot.
+      - name: Check the tools
+        working-directory: zigbee-sniffer
+        run: sh -n tools/make-oui-table.sh
